@@ -1,0 +1,88 @@
+#!/bin/bash
+set -e
+
+# DB connection variables
+ROLE=      # REQUIRED
+DB=        # REQUIRED
+HOSTNAME=  # OPTIONAL
+PORT=      # OPTIONAL
+
+if [ -z "$ROLE" ] || [ -z "$DB" ];
+then
+    echo "Please define the variables ROLE and DB in the migrate script"
+    exit 1
+fi
+
+# Build up psql argument string
+PSQL=""
+if [[ -n "$ROLE" ]]; then PSQL="$PSQL -U $ROLE"; fi
+if [[ -n "$DB" ]]; then PSQL="$PSQL -d $DB"; fi
+if [[ -n "$HOSTNAME" ]]; then PSQL="$PSQL -h $HOSTNAME"; fi
+if [[ -n "$PORT" ]]; then PSQL="$PSQL -p $PORT"; fi
+PSQL="$PSQL -v ON_ERROR_STOP=1"
+
+# Check that we can connect to the DB or exit (thanks to set -e).
+psql ${PSQL} -c'SELECT 0;' > /dev/null
+
+function build_script () {
+
+# Set the LAST_LINE here for clarity since based on argument
+LAST_LINE=${1-ROLLBACK;}
+
+# Get current version as a number or empty if no version exists.
+CURRENT_VERSION="$(psql ${PSQL} --tuples-only -c'SELECT MAX(id) FROM meta.version;' 2> /dev/null | bc)"
+
+# Build up migration script to pipe via psql
+SCRIPT="BEGIN;\nSET LOCAL ROLE TO ${ROLE};\n"
+for FILE in $(ls ???-*.sql | sort);
+do
+    VERSION=$(echo "${FILE:0:3}" | bc)
+    NAME=${FILE:4}
+    NAME=${NAME%.sql}
+
+    # Should we include the script?
+
+    if [[ -z "$CURRENT_VERSION" ]] || [[ "$CURRENT_VERSION" -lt "$VERSION" ]];
+    then
+
+        SCRIPT_PART=$(
+cat <<-EOF
+    \\echo 'VERSION ${VERSION}: Migrating...'
+    \\i ${FILE};
+    RESET ALL; -- Reset any local script settings
+    INSERT INTO meta.version (id, name) VALUES ('${VERSION}', '${NAME}');
+    \\echo 'VERSION ${VERSION}: DONE.'
+EOF)
+        SCRIPT="${SCRIPT}\n${SCRIPT_PART}\n"
+        unset SCRIPT_PART;
+    fi
+done
+
+# Append last line (usually ROLLBACK; or COMMIT;)
+SCRIPT="${SCRIPT}\n${LAST_LINE}"
+
+}
+
+case "$1" in
+
+    show)
+        build_script "ROLLBACK; -- OR COMMIT"
+        echo "-- Current database version is ${CURRENT_VERSION}"
+        echo "-- The below will be piped to psql ${PSQL}"
+        echo -e "${SCRIPT}"
+        ;;
+
+    dry)
+        build_script
+        echo -e "${SCRIPT}" | psql ${PSQL}
+        ;;
+
+    commit)
+        build_script "COMMIT;"
+        echo -e "${SCRIPT}" | psql ${PSQL}
+        ;;
+        
+    *)
+        echo $"Usage: $0 {show|dry|commit}"
+        exit 1
+esac

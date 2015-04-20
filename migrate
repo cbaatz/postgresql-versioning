@@ -1,5 +1,8 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -o errexit
+set -o pipefail
+set -o nounset
+# set -o xtrace
 
 # DB connection variables
 ROLE=      # REQUIRED
@@ -47,12 +50,14 @@ do
 
         SCRIPT_PART=$(
 cat <<-EOF
-    \\echo 'VERSION ${VERSION}: Migrating...'
-    \\i ${FILE};
-    RESET ALL; -- Reset any local script settings
+    \\\\echo 'VERSION ${VERSION}: Migrating...'
+    \\\\i ${FILE};
+    RESET ROLE; -- Reset script role
+    RESET search_path; -- Reset script search_path
     INSERT INTO meta.version (id, name) VALUES ('${VERSION}', '${NAME}');
-    \\echo 'VERSION ${VERSION}: DONE.'
-EOF)
+    \\\\echo 'VERSION ${VERSION}: DONE.'
+EOF
+)
         SCRIPT="${SCRIPT}\n${SCRIPT_PART}\n"
         unset SCRIPT_PART;
     fi
@@ -63,7 +68,8 @@ SCRIPT="${SCRIPT}\n${LAST_LINE}"
 
 }
 
-case "$1" in
+COMMAND="${1:-}"
+case "$COMMAND" in
 
     show)
         build_script "ROLLBACK; -- OR COMMIT"
